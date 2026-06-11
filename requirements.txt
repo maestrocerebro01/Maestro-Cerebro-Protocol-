@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic
+google-cloud-storage
+google-cloud-aiplatform
+httpx
+python-dotenv
+requests
+google-genai
+paypalrestsdk
+passlib[bcrypt]
+python-jose[cryptography]

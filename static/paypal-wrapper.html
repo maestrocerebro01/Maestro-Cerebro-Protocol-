@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PayPal Secure Wrapper</title>
+    <style>
+        body { margin: 0; padding: 1rem; background: transparent; text-align: center; }
+        .button-row { margin-bottom: 1rem; }
+        [hidden] { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="paypal-buttons">
+        <div class="button-row"><paypal-button hidden></paypal-button></div>
+        <div class="button-row"><paypal-pay-later-button hidden></paypal-pay-later-button></div>
+        <div class="button-row"><paypal-credit-button hidden></paypal-credit-button></div>
+    </div>
+
+    <!-- Isolated SDK Script -->
+    <script src="https://www.sandbox.paypal.com/web-sdk/v6/core"></script>
+
+    <script>
+        let currentTransactionId = null;
+
+        // --- Helper: Parent Notification ---
+        function notifyParent(type, payload = {}) {
+            // Strictly target the production domain or allow local dev
+            const TARGET = window.location.origin.includes("localhost") ? "*" : "https://escrow.maestro-cerebro.com";
+            window.parent.postMessage({ type, payload }, TARGET); 
+        }
+
+        // --- Helper: Backend Communication ---
+        async function getBrowserSafeClientToken() {
+            const response = await fetch("/paypal-api/auth/browser-safe-client-token");
+            const { accessToken } = await response.json();
+            return accessToken;
+        }
+
+        async function createOrder() {
+            const response = await fetch("/paypal-api/checkout/orders/create", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ amount: 100.00, sender_id: "user_a", receiver_id: "user_b" })
+            });
+            const data = await response.json();
+            currentTransactionId = data.id;
+            return { orderId: data.paypal_order_id };
+        }
+
+        async function captureOrder({ orderId }) {
+            if (!currentTransactionId) throw new Error("No active escrow transaction");
+            const response = await fetch(`/transactions/${currentTransactionId}/release`, { method: 'POST' });
+            return await response.json();
+        }
+
+        // --- PayPal v6 Integration Pattern ---
+
+        const paymentSessionOptions = {
+            async onApprove(data) {
+                notifyParent('PAYMENT_APPROVED', data);
+                try {
+                    const orderData = await captureOrder({ orderId: data.orderId });
+                    notifyParent('PAYMENT_COMPLETED', orderData);
+                } catch (err) {
+                    notifyParent('PAYMENT_ERROR', { message: 'Capture Failed' });
+                }
+            },
+            onCancel(data) { notifyParent('PAYMENT_CANCELLED', data); },
+            onError(error) { notifyParent('PAYMENT_ERROR', { message: 'SDK Error' }); }
+        };
+
+        async function onPayPalWebSdkLoaded() {
+            try {
+                const clientToken = await getBrowserSafeClientToken();
+                const sdkInstance = await window.paypal.createInstance({
+                    clientToken: clientToken,
+                    components: ["paypal-payments"],
+                    pageType: "checkout",
+                    clientMetadataId: crypto.randomUUID()
+                });
+
+                const paymentMethods = await sdkInstance.findEligibleMethods({ currencyCode: "USD" });
+
+                if (paymentMethods.isEligible("paypal")) {
+                    configurePayPalButton(sdkInstance);
+                }
+                if (paymentMethods.isEligible("paylater")) {
+                    setupPayLaterButton(sdkInstance, paymentMethods.getDetails("paylater"));
+                }
+                if (paymentMethods.isEligible("credit")) {
+                    setupPayPalCreditButton(sdkInstance, paymentMethods.getDetails("credit"));
+                }
+                
+                notifyParent('SDK_LOADED');
+            } catch (error) {
+                notifyParent('PAYMENT_ERROR', { message: 'Init Failed' });
+            }
+        }
+
+        async function configurePayPalButton(sdkInstance) {
+            const paypalSession = sdkInstance.createPayPalOneTimePaymentSession(paymentSessionOptions);
+            const btn = document.querySelector("paypal-button");
+            btn.removeAttribute("hidden");
+            btn.addEventListener("click", () => paypalSession.start({ presentationMode: "auto" }, createOrder()));
+        }
+
+        async function setupPayLaterButton(sdkInstance, details) {
+            const session = sdkInstance.createPayLaterOneTimePaymentSession(paymentSessionOptions);
+            const btn = document.querySelector("paypal-pay-later-button");
+            btn.productCode = details.productCode;
+            btn.countryCode = details.countryCode;
+            btn.removeAttribute("hidden");
+            btn.addEventListener("click", () => session.start({ presentationMode: "auto" }, createOrder()));
+        }
+
+        async function setupPayPalCreditButton(sdkInstance, details) {
+            const session = sdkInstance.createPayPalCreditOneTimePaymentSession(paymentSessionOptions);
+            const btn = document.querySelector("paypal-credit-button");
+            btn.countryCode = details.countryCode;
+            btn.removeAttribute("hidden");
+            btn.addEventListener("click", () => session.start({ presentationMode: "auto" }, createOrder()));
+        }
+
+        window.addEventListener('load', onPayPalWebSdkLoaded);
+    </script>
+</body>
+</html>

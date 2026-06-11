@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maestro Cerebro - Merchant Site</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 2rem; background-color: #f0f2f5; }
+        #merchant-app { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 500px; text-align: center; }
+        iframe { border: none; width: 100%; height: 450px; margin-top: 1rem; border-radius: 8px; }
+        .status-badge { display: inline-block; padding: 0.5rem 1rem; border-radius: 20px; background: #e2e8f0; margin-top: 1rem; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+
+    <div id="merchant-app">
+        <h1>Maestro Cerebro Checkout</h1>
+        <p>Secure Escrow Payment via Sentient Protocol</p>
+        
+        <div class="status-badge" id="app-status">Status: Waiting for initialization</div>
+
+        <!-- The Isolated PayPal Wrapper -->
+        <iframe id="paypal-iframe" src="/static/paypal-wrapper.html" title="PayPal Secure Payment"></iframe>
+    </div>
+
+    <script>
+        const iframe = document.getElementById('paypal-iframe');
+        const statusBadge = document.getElementById('app-status');
+        const TRUSTED_ORIGIN = "https://escrow.maestro-cerebro.com";
+
+        // Listen for messages from the PayPal iframe
+        window.addEventListener('message', (event) => {
+            // Strictly verify the origin for security
+            if (event.origin !== TRUSTED_ORIGIN && event.origin !== "http://localhost:8080") return;
+
+            const { type, payload } = event.data;
+
+            switch (type) {
+                case 'SDK_LOADED':
+                    statusBadge.innerText = "Status: Secure SDK Ready";
+                    break;
+                case 'PAYMENT_APPROVED':
+                    statusBadge.innerText = "Status: Payment Approved - Securing Funds";
+                    statusBadge.style.background = "#c6f6d5";
+                    break;
+                case 'PAYMENT_COMPLETED':
+                    statusBadge.innerText = "Status: Funds Held in Escrow";
+                    statusBadge.style.background = "#9ae6b4";
+                    
+                    // Display the Sentient Proof Image
+                    if (payload.metadata && payload.metadata.proof_url) {
+                        const img = document.createElement('img');
+                        img.src = payload.metadata.proof_url;
+                        img.style.width = "100%";
+                        img.style.marginTop = "1rem";
+                        img.style.borderRadius = "8px";
+                        img.title = "Sentient Proof of Integrity";
+                        document.getElementById('merchant-app').appendChild(img);
+                        
+                        const rationale = document.createElement('p');
+                        rationale.innerText = "AI Rationale: " + payload.metadata.ai_rationale;
+                        rationale.style.fontSize = "0.8rem";
+                        rationale.style.color = "#666";
+                        document.getElementById('merchant-app').appendChild(rationale);
+                    }
+                    
+                    alert("Escrow Completed: " + payload.id);
+                    break;
+                case 'PAYMENT_ERROR':
+                    statusBadge.innerText = "Status: Error - " + payload.message;
+                    statusBadge.style.background = "#fed7d7";
+                    break;
+            }
+        });
+    </script>
+</body>
+</html>

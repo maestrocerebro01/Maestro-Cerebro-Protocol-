@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maestro Cerebro Escrow Payment</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background-color: #f4f4f9; }
+        #payment-container { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; min-width: 400px; }
+        .button-row { margin-bottom: 1.5rem; width: 100%; }
+        .status { margin-top: 1rem; color: #555; }
+        [hidden] { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="payment-container">
+        <h1>Maestro Cerebro Escrow</h1>
+        <p>Confirm your payment to secure funds in escrow.</p>
+        
+        <!-- PayPal Web Components -->
+        <div class="button-row">
+            <paypal-button hidden></paypal-button>
+        </div>
+        <div class="button-row">
+            <paypal-pay-later-button hidden></paypal-pay-later-button>
+        </div>
+        <div class="button-row">
+            <paypal-credit-button hidden></paypal-credit-button>
+        </div>
+
+        <div id="status-message" class="status"></div>
+    </div>
+
+    <!-- User provided PayPal Sandbox Core SDK -->
+    <script src="https://www.sandbox.paypal.com/web-sdk/v6/core"></script>
+    
+    <script>
+        const statusDiv = document.getElementById('status-message');
+        let currentTransactionId = null;
+
+        // --- Helper Functions for Backend Communication ---
+
+        async function getBrowserSafeClientToken() {
+            const response = await fetch("/paypal-api/auth/browser-safe-client-token", {
+                method: "GET",
+                headers: { "Content-Type": "application/json" }
+            });
+            const { accessToken } = await response.json();
+            return accessToken;
+        }
+
+        async function createOrder() {
+            // In v6, this must return an object with the shape: { orderId: "YOUR_ORDER_ID" }
+            const orderPayload = {
+                amount: 100.00,
+                sender_id: "customer_123",
+                receiver_id: "merchant_456"
+            };
+
+            return fetch("/paypal-api/checkout/orders/create", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(orderPayload),
+            })
+            .then(response => response.json())
+            .then(data => {
+                currentTransactionId = data.id;
+                statusDiv.innerText = "Escrow transaction created: " + data.id;
+                return { orderId: data.paypal_order_id }; // <-- Required return value for v6
+            });
+        } // End createOrder
+
+        async function captureOrder({ orderId }) {
+            if (!currentTransactionId) throw new Error("No active escrow transaction found");
+            
+            // In our backend, /release handles the capture and finalization
+            const response = await fetch(`/transactions/${currentTransactionId}/release`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            return await response.json();
+        }
+
+        // --- User Provided SDK v6 Logic ---
+
+        const paymentSessionOptions = {
+            async onApprove(data) {
+                console.log("Payment approved:", data);
+                statusDiv.innerText = "Payment approved! Capturing via Sentient Protocol...";
+                try {
+                    const orderData = await captureOrder({ orderId: data.orderId });
+                    console.log("Payment captured successfully:", orderData);
+                    statusDiv.innerText = "Funds released and captured successfully!";
+                } catch (error) {
+                    console.error("Payment capture failed:", error);
+                    statusDiv.innerText = "Payment capture failed. Check console.";
+                }
+            },
+            onCancel(data) {
+                console.log("Payment cancelled:", data);
+                statusDiv.innerText = "Payment cancelled by user.";
+            },
+            onError(error) {
+                console.error("Payment error:", error);
+                statusDiv.innerText = "An error occurred during payment processing.";
+            },
+        };
+
+        async function onPayPalWebSdkLoaded() {
+            try {
+                statusDiv.innerText = "Initializing PayPal SDK...";
+                const clientToken = await getBrowserSafeClientToken();
+
+                const sdkInstance = await window.paypal.createInstance({
+                    clientToken: clientToken,
+                    components: ["paypal-payments"],
+                    pageType: "checkout",
+                    clientMetadataId: crypto.randomUUID()
+                });
+
+                const paymentMethods = await sdkInstance.findEligibleMethods({
+                    currencyCode: "USD",
+                });
+
+                if (paymentMethods.isEligible("paypal")) {
+                    await configurePayPalButton(sdkInstance);
+                }
+
+                if (paymentMethods.isEligible("paylater")) {
+                    const payLaterDetails = paymentMethods.getDetails("paylater");
+                    await setupPayLaterButton(sdkInstance, payLaterDetails);
+                }
+
+                if (paymentMethods.isEligible("credit")) {
+                    const creditDetails = paymentMethods.getDetails("credit");
+                    await setupPayPalCreditButton(sdkInstance, creditDetails);
+                }
+                
+                statusDiv.innerText = "Ready for payment.";
+            } catch (error) {
+                console.error("SDK initialization error:", error);
+                statusDiv.innerText = "Failed to load PayPal SDK.";
+            }
+        }
+
+        async function configurePayPalButton(sdkInstance) {
+            const paypalSession = sdkInstance.createPayPalOneTimePaymentSession(paymentSessionOptions);
+            const btn = document.querySelector("paypal-button");
+            btn.removeAttribute("hidden");
+            btn.addEventListener("click", async () => {
+                try {
+                    await paypalSession.start({ presentationMode: "auto" }, createOrder());
+                } catch (error) {
+                    console.error("PayPal start error:", error);
+                }
+            });
+        }
+
+        async function setupPayLaterButton(sdkInstance, details) {
+            const session = sdkInstance.createPayLaterOneTimePaymentSession(paymentSessionOptions);
+            const btn = document.querySelector("paypal-pay-later-button");
+            btn.productCode = details.productCode;
+            btn.countryCode = details.countryCode;
+            btn.removeAttribute("hidden");
+            btn.addEventListener("click", async () => {
+                try {
+                    await session.start({ presentationMode: "auto" }, createOrder());
+                } catch (error) {
+                    console.error("Pay Later start error:", error);
+                }
+            });
+        }
+
+        async function setupPayPalCreditButton(sdkInstance, details) {
+            const session = sdkInstance.createPayPalCreditOneTimePaymentSession(paymentSessionOptions);
+            const btn = document.querySelector("paypal-credit-button");
+            btn.countryCode = details.countryCode;
+            btn.removeAttribute("hidden");
+            btn.addEventListener("click", async () => {
+                try {
+                    await session.start({ presentationMode: "auto" }, createOrder());
+                } catch (error) {
+                    console.error("PayPal Credit start error:", error);
+                }
+            });
+        }
+
+        // Initialize when script is ready
+        window.addEventListener('load', onPayPalWebSdkLoaded);
+    </script>
+</body>
+</html>
