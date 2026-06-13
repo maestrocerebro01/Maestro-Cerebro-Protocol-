@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sentient Protocol Audit Dashboard</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0d1117; color: #c9d1d9; padding: 2rem; }
+        h1 { color: #58a6ff; }
+        .event-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-bottom: 1rem; }
+        .timestamp { font-size: 0.8rem; color: #8b949e; }
+        .event-type { font-weight: bold; color: #79c0ff; margin-right: 0.5rem; }
+        pre { background-color: #010409; padding: 0.5rem; border-radius: 4px; overflow-x: auto; }
+        .proof-img { max-width: 200px; border-radius: 4px; margin-top: 0.5rem; border: 1px solid #30363d; }
+    </style>
+</head>
+<body>
+    <h1>Sentient Protocol Audit Logs</h1>
+    <div id="logs-container">Loading protocol events...</div>
+
+    <script>
+        async function fetchLogs() {
+            try {
+                const response = await fetch('/protocol/logs');
+                const logs = await response.json();
+                const container = document.getElementById('logs-container');
+                container.innerHTML = '';
+
+                logs.reverse().forEach(event => {
+                    const card = document.createElement('div');
+                    card.className = 'event-card';
+                    
+                    let proofHtml = '';
+                    if (event.details.proof_url) {
+                        proofHtml = `<img src="${event.details.proof_url}" class="proof-img" alt="Visual Proof">`;
+                    }
+
+                    card.innerHTML = `
+                        <div class="timestamp">${new Date(event.timestamp).toLocaleString()}</div>
+                        <div><span class="event-type">${event.event_type}</span></div>
+                        <pre>${JSON.stringify(event.details, null, 2)}</pre>
+                        ${proofHtml}
+                    `;
+                    container.appendChild(card);
+                });
+            } catch (err) {
+                document.getElementById('logs-container').innerText = 'Failed to load logs.';
+            }
+        }
+
+        fetchLogs();
+        setInterval(fetchLogs, 5000); // Auto-refresh every 5s
+    </script>
+</body>
+</html>

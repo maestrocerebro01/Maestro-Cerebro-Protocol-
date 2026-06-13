@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Stripe Secure Wrapper</title>
+    <script src="https://js.stripe.com/v3/"></script>
+    <style>
+        body { margin: 0; padding: 1rem; background: transparent; text-align: center; font-family: sans-serif; }
+        #payment-element { margin-bottom: 1.5rem; }
+        button {
+            background-color: #6772e5;
+            color: white;
+            padding: 12px 16px;
+            border-radius: 4px;
+            border: none;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+        }
+        button:disabled { opacity: 0.5; cursor: default; }
+        #error-message { color: #df1b41; margin-top: 1rem; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+    <div id="stripe-container">
+        <div id="payment-element"></div>
+        <button id="submit">Secure Funds in Escrow</button>
+        <div id="error-message"></div>
+    </div>
+
+    <script>
+        let stripe;
+        let elements;
+        let currentTransactionId = null;
+
+        function notifyParent(type, payload = {}) {
+            const TARGET = window.location.origin.includes("localhost") || window.location.origin.includes(".cloudshell.dev") ? "*" : "https://escrow.maestro-cerebro.com";
+            window.parent.postMessage({ type, payload }, TARGET); 
+        }
+
+        async function initialize() {
+            // 1. Create Transaction on backend with Stripe as payment method
+            const response = await fetch("/transactions/", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ 
+                    amount: 75.00, 
+                    sender_id: "user_a", 
+                    receiver_id: "user_b",
+                    payment_method: "stripe"
+                })
+            });
+            const data = await response.json();
+            currentTransactionId = data.id;
+            const clientSecret = data.metadata.client_secret;
+
+            // 2. Initialize Stripe.js
+            // Replace with your real public key if not mocking
+            stripe = Stripe('pk_test_mock_key'); 
+            
+            const options = {
+                clientSecret,
+                appearance: { theme: 'flat' },
+            };
+
+            elements = stripe.elements(options);
+            const paymentElement = elements.create("payment");
+            paymentElement.mount("#payment-element");
+            
+            notifyParent('SDK_LOADED');
+        }
+
+        document.querySelector("#submit").addEventListener("click", async (e) => {
+            e.preventDefault();
+            const submitBtn = document.querySelector("#submit");
+            submitBtn.disabled = true;
+
+            notifyParent('PAYMENT_APPROVED');
+
+            // In a real scenario, we would use stripe.confirmPayment()
+            // Since we are vetting/mocking, we simulate success
+            setTimeout(async () => {
+                try {
+                    const response = await fetch(`/transactions/${currentTransactionId}/release`, { method: 'POST' });
+                    const result = await response.json();
+                    notifyParent('PAYMENT_COMPLETED', result);
+                } catch (err) {
+                    document.querySelector("#error-message").innerText = "Capture Failed";
+                    notifyParent('PAYMENT_ERROR', { message: 'Capture Failed' });
+                } finally {
+                    submitBtn.disabled = false;
+                }
+            }, 1500);
+        });
+
+        window.addEventListener('load', initialize);
+    </script>
+</body>
+</html>
