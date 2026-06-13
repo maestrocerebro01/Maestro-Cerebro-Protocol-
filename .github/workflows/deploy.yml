@@ -1,0 +1,47 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: 'auth'
+        name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: 'projects/397722564908/locations/global/workloadIdentityPools/maestro-pool/providers/maestro-github-provider'
+          service_account: 'maestro-cerebro-escrow-sa@project-38af5abf-32a0-48ad-9a4.iam.gserviceaccount.com'
+
+      - name: 'Build and Push Container'
+        run: |
+          # Build the Docker image
+          docker build -t us-docker.pkg.dev/project-38af5abf-32a0-48ad-9a4/escrow-repo/escrow-service:latest .
+          # Authenticate Docker to Artifact Registry
+          gcloud auth configure-docker us-docker.pkg.dev
+          # Push the image
+          docker push us-docker.pkg.dev/project-38af5abf-32a0-48ad-9a4/escrow-repo/escrow-service:latest
+
+      - name: 'Deploy to Cloud Run'
+        uses: 'google-github-actions/deploy-cloudrun@v2'
+        with:
+          service: 'escrow-service'
+          image: 'us-docker.pkg.dev/project-38af5abf-32a0-48ad-9a4/escrow-repo/escrow-service:latest'
+          region: 'us-central1'
+          # Map secrets from Secret Manager to env vars in the container
+          secrets: |
+            STRIPE_API_KEY=STRIPE_API_KEY:latest
+            STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest
+            PAYPAL_CLIENT_ID=PAYPAL_CLIENT_ID:latest
+            PAYPAL_CLIENT_SECRET=PAYPAL_CLIENT_SECRET:latest
+            JWT_SECRET_KEY=JWT_SECRET_KEY:latest
+            GLOBAL_API_SECRET=GLOBAL_API_SECRET:latest
