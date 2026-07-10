@@ -15,6 +15,7 @@ from protocol import protocol
 from payments import paypal
 from stripe_client import stripe_client
 from ledger import record_payout_event, idempotency_key_used, event_already_processed
+from quickbooks_client import quickbooks
 import anyio
 import logging
 
@@ -320,7 +321,42 @@ async def create_stripe_payout(
     await protocol.register_event("STRIPE_PAYOUT_CREATED", {
         "payout_id": result.get("id"), "amount": payout.amount, "idempotency_key": idem,
     })
-    return {"status": "created", "idempotency_key": idem, "payout": result}
+
+    # 4. Record the payout + tax set-aside reserve in QuickBooks (tax/audit records).
+    #    Reserve is a calc, NOT withholding - confirm the rate with a CPA.
+    tax_rate = float(os.getenv("TAX_SET_ASIDE_RATE", "0.25"))
+    tax_set_aside = round(payout.amount * tax_rate, 2)
+    try:
+        qbo_res = quickbooks.record_payout(
+            payout_id=result.get("id"),
+            amount=payout.amount,
+            currency=payout.currency,
+            tax_set_aside=tax_set_aside,
+            idempotency_key=idem,
+            metadata=payout.metadata,
+        )
+        record_payout_event({
+            "type": "quickbooks.payout.recorded",
+            "idempotency_key": idem,
+            "stripe_payout_id": result.get("id"),
+            "amount": payout.amount,
+            "tax_rate": tax_rate,
+            "tax_set_aside": tax_set_aside,
+            "qbo": {k: v for k, v in qbo_res.items() if k in ("mock", "qbo_journal_entry_id")},
+        })
+    except Exception as e:
+        record_payout_event({
+            "type": "quickbooks.payout.record_error",
+            "idempotency_key": idem,
+            "stripe_payout_id": result.get("id"),
+            "error": str(e),
+        })
+        logging.getLogger("QuickBooks").error(
+            "Failed to record payout %s in QuickBooks: %s", result.get("id"), e
+        )
+
+    return {"status": "created", "idempotency_key": idem,
+            "tax_set_aside": tax_set_aside, "payout": result}
 
 
 @app.post("/webhooks/stripe")
@@ -367,6 +403,45 @@ async def stripe_webhook(request: Request):
         await protocol.register_event(f"STRIPE_{event_type.replace('.', '_').upper()}", record)
         if event_type == "payout.failed":
             logging.getLogger("StripeWebhook").error("Payout FAILED: %s", record)
+        return {"received": True, "event_id": event_id, "type": event_type}
+
+    # 4. Capture the Stripe balance side: incoming charges and the fees we pay
+    #    Stripe (the cost of the integration), recording fees to QuickBooks.
+    if event_type in ("charge.succeeded", "payment_intent.succeeded"):
+        obj = (event.get("data") or {}).get("object") or {}
+        currency = obj.get("currency", "usd")
+        gross_minor = obj.get("amount") or obj.get("amount_received")
+        fee_minor = stripe_client.get_charge_fee(obj.get("balance_transaction"))
+        charge_record = {
+            "type": event_type,
+            "stripe_event_id": event_id,
+            "charge_id": obj.get("id"),
+            "currency": currency,
+            "gross_amount": round(gross_minor / 100.0, 2) if gross_minor is not None else None,
+            "fee_amount": round(fee_minor / 100.0, 2) if fee_minor is not None else None,
+            "livemode": event.get("livemode", False),
+        }
+        record_payout_event(charge_record)
+        if fee_minor:
+            try:
+                qbo_fee = quickbooks.record_stripe_fee(
+                    amount=fee_minor / 100.0, currency=currency, source_id=obj.get("id"),
+                )
+                record_payout_event({
+                    "type": "quickbooks.fee.recorded",
+                    "stripe_event_id": event_id,
+                    "charge_id": obj.get("id"),
+                    "fee_amount": round(fee_minor / 100.0, 2),
+                    "qbo": {k: v for k, v in qbo_fee.items() if k in ("mock", "qbo_purchase_id")},
+                })
+            except Exception as e:
+                record_payout_event({
+                    "type": "quickbooks.fee.record_error",
+                    "stripe_event_id": event_id,
+                    "error": str(e),
+                })
+                logging.getLogger("QuickBooks").error("Failed to record Stripe fee in QuickBooks: %s", e)
+        await protocol.register_event(f"STRIPE_{event_type.replace('.', '_').upper()}", charge_record)
         return {"received": True, "event_id": event_id, "type": event_type}
 
     return {"received": True, "event_id": event_id, "type": event_type, "ignored": True}

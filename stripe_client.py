@@ -123,6 +123,23 @@ class StripeClient:
         )
         return payout.to_dict() if hasattr(payout, "to_dict") else dict(payout)
 
+    def get_charge_fee(self, balance_transaction):
+        """
+        Return the Stripe fee (in the smallest currency unit) for a charge's
+        balance transaction. Webhook payloads carry only the balance
+        transaction id, so we retrieve it in live mode to read the fee.
+        """
+        if isinstance(balance_transaction, dict):
+            return balance_transaction.get("fee")
+        if self.mock or not stripe or not self.api_key or not balance_transaction:
+            return None
+        try:
+            bt = stripe.BalanceTransaction.retrieve(balance_transaction)
+            return bt.get("fee") if hasattr(bt, "get") else getattr(bt, "fee", None)
+        except Exception as exc:
+            logger.warning("Could not retrieve balance transaction %s: %s", balance_transaction, exc)
+            return None
+
 
 # Global instance for the service.
 stripe_client = StripeClient()
