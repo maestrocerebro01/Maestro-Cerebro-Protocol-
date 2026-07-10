@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, status
+from fastapi import FastAPI, HTTPException, Depends, Header, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import Optional, List
@@ -13,7 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from protocol import protocol
 from payments import paypal
+from stripe_client import stripe_client
+from ledger import record_payout_event, idempotency_key_used, event_already_processed
 import anyio
+import logging
 
 # Auth Setup
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -79,6 +82,14 @@ class PayoutRequest(BaseModel):
     recipient_email: str
     amount: float
     currency: str = "USD"
+
+class StripePayoutRequest(BaseModel):
+    amount: float
+    currency: str = "USD"
+    # Optional client-supplied idempotency key. If omitted, a fresh unique key
+    # is generated. A key that has already been used is rejected (never reused).
+    idempotency_key: Optional[str] = None
+    metadata: Optional[dict] = None
 
 @app.get("/")
 async def root():
@@ -256,6 +267,110 @@ async def cancel_transaction(
     tx.status = "cancelled"
     await protocol.register_event("TRANSACTION_CANCELLED", {"id": transaction_id})
     return {"message": "Transaction cancelled successfully", "transaction": tx}
+
+@app.post("/payouts/stripe")
+async def create_stripe_payout(
+    payout: StripePayoutRequest,
+    admin: bool = Depends(authenticate_admin),
+    api_key: str = Depends(authenticate_global)
+):
+    """
+    On-demand Stripe payout from the Maestro Cerebro balance to the business's
+    OWN default bank account. Manual approval is enforced via admin auth
+    (non-negotiable: on-demand + manual approval). Every payout carries a unique
+    idempotency key that is never reused, and every payout is logged.
+
+    Defaults to STRIPE_MOCK; runs live only with STRIPE_MOCK=false and a live
+    (sk_live_) restricted payouts-only key. Start in test mode (sk_test_) first.
+    """
+    # 1. Resolve a unique idempotency key that has NEVER been used before.
+    idem = payout.idempotency_key or f"payout_{uuid.uuid4()}"
+    if idempotency_key_used(idem):
+        raise HTTPException(status_code=409, detail="idempotency_key already used; refusing to reuse")
+
+    # 2. Attempt the payout. Any failure is still logged (no payout action unlogged).
+    try:
+        result = stripe_client.create_payout(
+            amount=payout.amount,
+            currency=payout.currency,
+            idempotency_key=idem,
+            metadata=payout.metadata,
+        )
+    except Exception as e:
+        record_payout_event({
+            "type": "payout.create.error",
+            "idempotency_key": idem,
+            "amount": payout.amount,
+            "currency": payout.currency,
+            "error": str(e),
+        })
+        raise HTTPException(status_code=500, detail=f"Stripe payout failed: {str(e)}")
+
+    # 3. Log/record the payout (non-negotiable) and register the protocol event.
+    record_payout_event({
+        "type": "payout.create",
+        "idempotency_key": idem,
+        "stripe_payout_id": result.get("id"),
+        "amount": payout.amount,
+        "currency": payout.currency,
+        "status": result.get("status"),
+        "livemode": result.get("livemode", False),
+        "mock": result.get("mock", False),
+    })
+    await protocol.register_event("STRIPE_PAYOUT_CREATED", {
+        "payout_id": result.get("id"), "amount": payout.amount, "idempotency_key": idem,
+    })
+    return {"status": "created", "idempotency_key": idem, "payout": result}
+
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    """
+    Stripe webhook receiver for payout.* events.
+
+    The Stripe-Signature header is the ONLY authentication (Stripe cannot send
+    our custom auth headers), so we read the RAW body and verify it against
+    STRIPE_WEBHOOK_SECRET. Processing is idempotent (deduped on event id), every
+    payout event is logged, and we return 200 on success so Stripe stops
+    retrying. Invalid signature/payload -> 400.
+    """
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    # 1. Verify signature + parse. Bad signature/payload -> 400.
+    try:
+        event = stripe_client.construct_event(payload, sig_header)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Webhook verification failed: {str(e)}")
+
+    event_id = event.get("id")
+    event_type = event.get("type", "")
+
+    # 2. Idempotent processing: Stripe may deliver the same event more than once.
+    if event_id and event_already_processed(event_id):
+        return {"received": True, "duplicate": True, "event_id": event_id}
+
+    # 3. Only act on payout.* events; acknowledge everything else without acting.
+    if event_type in stripe_client.PAYOUT_EVENTS:
+        obj = (event.get("data") or {}).get("object") or {}
+        record = {
+            "type": event_type,
+            "stripe_event_id": event_id,
+            "stripe_payout_id": obj.get("id"),
+            "amount": obj.get("amount"),
+            "currency": obj.get("currency"),
+            "status": obj.get("status"),
+            "failure_message": obj.get("failure_message"),
+            "livemode": event.get("livemode", False),
+        }
+        record_payout_event(record)
+        await protocol.register_event(f"STRIPE_{event_type.replace('.', '_').upper()}", record)
+        if event_type == "payout.failed":
+            logging.getLogger("StripeWebhook").error("Payout FAILED: %s", record)
+        return {"received": True, "event_id": event_id, "type": event_type}
+
+    return {"received": True, "event_id": event_id, "type": event_type, "ignored": True}
+
 
 if __name__ == "__main__":
     import uvicorn
