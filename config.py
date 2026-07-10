@@ -59,5 +59,21 @@ class Config:
     def stripe_webhook_secret(self):
         return self.get_secret("STRIPE_WEBHOOK_SECRET")
 
+    @property
+    def quickbooks_client_id(self):
+        return self.get_secret("QUICKBOOKS_CLIENT_ID")
+
+    @property
+    def quickbooks_client_secret(self):
+        return self.get_secret("QUICKBOOKS_CLIENT_SECRET")
+
+    @property
+    def quickbooks_refresh_token(self):
+        return self.get_secret("QUICKBOOKS_REFRESH_TOKEN")
+
+    @property
+    def quickbooks_realm_id(self):
+        return self.get_secret("QUICKBOOKS_REALM_ID")
+
 # Global config instance
 config = Config()
