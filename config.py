@@ -33,14 +33,6 @@ class Config:
         return os.getenv(secret_id, default)
 
     @property
-    def paypal_client_id(self):
-        return self.get_secret("PAYPAL_CLIENT_ID")
-
-    @property
-    def paypal_client_secret(self):
-        return self.get_secret("PAYPAL_CLIENT_SECRET")
-
-    @property
     def sentient_protocol_project(self):
         return self.get_secret("GCP_PROJECT", self.project_id)
 
