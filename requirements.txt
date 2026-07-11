@@ -3,10 +3,12 @@ uvicorn
 pydantic
 google-cloud-storage
 google-cloud-aiplatform
+google-cloud-secret-manager
 httpx
 python-dotenv
 requests
 google-genai
 paypalrestsdk
+stripe
 passlib[bcrypt]
 python-jose[cryptography]

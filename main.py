@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from protocol import protocol
 from payments import paypal
+from stripe_payments import stripe_client
 import anyio
 
 # Auth Setup
@@ -59,8 +60,8 @@ app.add_middleware(
 )
 # app.add_middleware(TrustedHostMiddleware, allowed_hosts=["escrow.maestro-cerebro.com", "localhost", "127.0.0.1"])
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="escrow-service/static"), name="static")
+# Mount static files (the static/ directory is copied to the image working dir)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # In-memory storage for demonstration (replace with database in production)
 transactions = {}
@@ -80,6 +81,11 @@ class PayoutRequest(BaseModel):
     amount: float
     currency: str = "USD"
 
+class StripePayoutRequest(BaseModel):
+    amount: float
+    currency: str = "usd"
+    idempotency_key: Optional[str] = None
+
 @app.get("/")
 async def root():
     return {"message": "Welcome to the Maestro Cerebro Escrow Service", "status": "active"}
@@ -96,6 +102,50 @@ async def create_payout(
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Payout creation failed: {str(e)}")
+
+@app.get("/stripe/balance")
+async def get_stripe_balance(api_key: str = Depends(authenticate_global)):
+    """Report the account's available (settled) and pending Stripe balance."""
+    try:
+        return stripe_client.get_balance()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve Stripe balance: {str(e)}")
+
+@app.post("/stripe/payouts")
+async def create_stripe_payout(
+    payout: StripePayoutRequest,
+    admin: bool = Depends(authenticate_admin),
+    api_key: str = Depends(authenticate_global)
+):
+    """
+    On-demand, manually-approved Stripe payout: withdraws the settled Stripe
+    balance to Maestro Cerebro LLC's own business bank account (the default
+    external account on the Stripe account).
+
+    Requires BOTH admin and global API auth -- this is the manual-approval
+    guardrail; nothing moves money automatically. Every payout carries a unique
+    idempotency key and is logged. When STRIPE_MOCK is not "false", the call is
+    simulated and no money moves.
+    """
+    try:
+        result = stripe_client.create_payout(
+            amount=payout.amount,
+            currency=payout.currency,
+            idempotency_key=payout.idempotency_key,
+        )
+        await protocol.register_event("STRIPE_PAYOUT_CREATED", {
+            "payout_id": result.get("id"),
+            "amount": payout.amount,
+            "currency": payout.currency,
+            "idempotency_key": result.get("idempotency_key"),
+            "mock": result.get("mock"),
+        })
+        return result
+    except ValueError as e:
+        # Business-rule violations (e.g. amount exceeds available balance)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Stripe payout failed: {str(e)}")
 
 @app.get("/paypal-client-token")
 async def get_client_token(api_key: str = Depends(authenticate_global)):
