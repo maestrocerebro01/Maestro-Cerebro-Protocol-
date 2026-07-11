@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, status
+from fastapi import FastAPI, HTTPException, Depends, Header, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import Optional, List
@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from protocol import protocol
 from payments import paypal
+from stripe_client import stripe_client, StripeConfigError
 import anyio
 
 # Auth Setup
@@ -79,6 +80,12 @@ class PayoutRequest(BaseModel):
     recipient_email: str
     amount: float
     currency: str = "USD"
+
+class StripePayoutRequest(BaseModel):
+    amount: float                 # major units, e.g. dollars
+    currency: str = "USD"
+    confirm: bool = False         # manual-approval gate — must be true to execute
+    note: Optional[str] = None
 
 @app.get("/")
 async def root():
@@ -256,6 +263,113 @@ async def cancel_transaction(
     tx.status = "cancelled"
     await protocol.register_event("TRANSACTION_CANCELLED", {"id": transaction_id})
     return {"message": "Transaction cancelled successfully", "transaction": tx}
+
+# ---------------------------------------------------------------------------
+# Stripe: webhook verification + on-demand live payouts
+# ---------------------------------------------------------------------------
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    """
+    Receive Stripe events. The raw request body and the Stripe-Signature header
+    are verified against STRIPE_WEBHOOK_SECRET before any processing, so forged
+    or tampered events are rejected with 400.
+    """
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+    if not sig_header:
+        raise HTTPException(status_code=400, detail="Missing Stripe-Signature header")
+
+    try:
+        event = stripe_client.verify_webhook(payload, sig_header)
+    except StripeConfigError as e:
+        raise HTTPException(status_code=500, detail=f"Stripe not configured: {str(e)}")
+    except Exception as e:
+        # stripe.error.SignatureVerificationError or malformed payload
+        raise HTTPException(status_code=400, detail=f"Webhook signature verification failed: {str(e)}")
+
+    event_type = event["type"]
+    data_object = event["data"]["object"]
+
+    # Audit: log every verified event
+    await protocol.register_event("STRIPE_WEBHOOK_VERIFIED", {
+        "event_id": event.get("id"),
+        "type": event_type,
+        "livemode": event.get("livemode"),
+    })
+
+    # Dispatch on payout lifecycle events
+    if event_type in ("payout.created", "payout.paid", "payout.failed", "payout.canceled"):
+        await protocol.register_event("STRIPE_" + event_type.upper().replace(".", "_"), {
+            "payout_id": data_object.get("id"),
+            "amount": data_object.get("amount"),
+            "currency": data_object.get("currency"),
+            "status": data_object.get("status"),
+        })
+
+    return {"received": True, "type": event_type}
+
+
+@app.post("/stripe/payouts")
+async def create_stripe_payout(
+    payout: StripePayoutRequest,
+    admin: bool = Depends(authenticate_admin),
+    api_key: str = Depends(authenticate_global),
+):
+    """
+    On-demand payout from the Stripe balance to Maestro Cerebro LLC's own default
+    external (bank) account. Guardrails enforced here:
+      - manual approval on every payout (confirm=true required; never scheduled)
+      - unique idempotency key per payout (never reused -> no double payouts)
+      - withdraw only up to the available (settled) balance
+      - every payout is logged for audit
+    """
+    # Guardrail: manual approval on every payout
+    if not payout.confirm:
+        raise HTTPException(status_code=400, detail="Payout requires explicit manual approval (confirm=true).")
+
+    amount_cents = int(round(payout.amount * 100))
+    if amount_cents <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero.")
+
+    # Guardrail: unique idempotency key per payout
+    idempotency_key = f"mc_payout_{uuid.uuid4()}"
+
+    try:
+        # Guardrail: only the available (settled) balance may be withdrawn
+        available = stripe_client.get_available_balance(payout.currency)
+        if not stripe_client.mock and amount_cents > available:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Requested {amount_cents} exceeds available balance {available} ({payout.currency.lower()}).",
+            )
+
+        result = stripe_client.create_payout(
+            amount_cents=amount_cents,
+            currency=payout.currency,
+            idempotency_key=idempotency_key,
+            metadata={"note": payout.note or "", "source": "maestro-cerebro-escrow"},
+        )
+    except HTTPException:
+        raise
+    except StripeConfigError as e:
+        raise HTTPException(status_code=500, detail=f"Stripe not configured: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Stripe payout failed: {str(e)}")
+
+    payout_id = result.get("id") if hasattr(result, "get") else result["id"]
+
+    # Guardrail: every payout is logged (audit + currency trail)
+    await protocol.register_event("STRIPE_PAYOUT_CREATED", {
+        "payout_id": payout_id,
+        "amount_cents": amount_cents,
+        "currency": payout.currency.lower(),
+        "idempotency_key": idempotency_key,
+        "mode": stripe_client.mode,
+    })
+
+    return {"status": "created", "payout": result, "idempotency_key": idempotency_key}
+
 
 if __name__ == "__main__":
     import uvicorn

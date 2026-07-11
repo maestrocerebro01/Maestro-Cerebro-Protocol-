@@ -8,5 +8,6 @@ python-dotenv
 requests
 google-genai
 paypalrestsdk
+stripe
 passlib[bcrypt]
 python-jose[cryptography]
