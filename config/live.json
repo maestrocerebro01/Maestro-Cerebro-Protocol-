@@ -2,7 +2,7 @@
   "environment": "live",
   "stripe_api_key_secret": "STRIPE_API_KEY",
   "stripe_webhook_secret_name": "STRIPE_WEBHOOK_SECRET",
-  "destination_account_reference": "Maestro Cerebro LLC business bank (Bluevine)",
+  "destination_account_reference": "Maestro Cerebro LLC Wise Business USD account (ACH payout bank)",
   "reporting_currency": "USD",
   "fx_rate_source": "stripe_balance_transaction",
   "tax_set_aside_rate": null,

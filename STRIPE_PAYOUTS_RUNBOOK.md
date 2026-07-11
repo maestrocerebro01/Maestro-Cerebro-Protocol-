@@ -35,11 +35,16 @@ The webhook signing secret is **per environment** and comes from step 4; do the 
 - [ ] Keep the `rk_test_...` key for local/sandbox runs (export as env var locally, do **not** put the test key in the live secret).
 - [ ] Never commit either key. `deploy.yml` already injects `STRIPE_API_KEY` + `STRIPE_WEBHOOK_SECRET` from Secret Manager, so no CI change is needed.
 
-## 3. Set payout schedule to Manual (test + live)
+## 3. Set payout schedule to Manual + connect the payout bank (test + live)
 So revenue accumulates in the Stripe balance for on-demand withdrawal instead of auto-sweeping.
 - [ ] Dashboard -> Settings -> Payouts -> Payout schedule -> **Manual** (Test mode).
 - [ ] Repeat in Live mode.
-- [ ] Confirm the **destination bank** on the live account is the Maestro Cerebro LLC business account (Bluevine).
+
+**Payout destination bank = Wise Business (USD).** Stripe pays out over ACH; Wise provides USD account details (account number + ACH routing number) that Stripe accepts as a standard payout destination (free, ~2 business days).
+- [ ] Open a **Wise Business** account in the LLC's name (**Maestro Cerebro LLC**) and get its **USD** account details (Wise -> Home -> USD account details).
+- [ ] Stripe Dashboard -> **Settings -> Bank accounts and scheduling -> Add a bank account** -> enter the Wise **USD** account number + routing number.
+- [ ] Confirm the name on the Wise USD details **matches** the Stripe account holder (Maestro Cerebro LLC) — mismatched names cause ACH payouts to bounce.
+- [ ] (Note: this is Stripe -> Wise, i.e. Wise as the receiving bank. It is separate from the Wise payout bot, which sends money *out* of a Wise balance via the Wise API.)
 
 ## 4. Register the webhook endpoint (test + live)
 - [ ] Dashboard -> Developers -> Webhooks -> Add endpoint.
@@ -103,8 +108,8 @@ Note: FastAPI turns header params into hyphenated names, so send `admin-password
 - [ ] Confirm live env: `STRIPE_MODE=live`, live `STRIPE_API_KEY` loaded, `STRIPE_MOCK` off.
 - [ ] Check the **available (settled)** balance is >= the amount (pending funds must clear first).
 - [ ] Start small (e.g. $1.00). Call `/stripe/payouts` with `confirm=true`.
-- [ ] **Pass criteria:** response `status: created`; within a few minutes the live webhook fires `payout.paid` and your log shows `STRIPE_PAYOUT_PAID`; funds land in the LLC bank per Stripe's payout timing.
-- [ ] Confirm in Dashboard -> Payments -> Payouts that the payout shows and is destined for the LLC bank.
+- [ ] **Pass criteria:** response `status: created`; within a few minutes the live webhook fires `payout.paid` and your log shows `STRIPE_PAYOUT_PAID`; funds land in the LLC Wise account per Stripe's payout timing.
+- [ ] Confirm in Dashboard -> Payments -> Payouts that the payout shows and is destined for the LLC Wise account.
 
 ## 9. Record-keeping (every payout, no exceptions)
 - [ ] Record the payout in **QuickBooks** (account under maestrocerebro01@gmail.com), including a **tax set-aside reserve** amount. Set the reserve rate with a CPA (`tax_set_aside_rate` is `null` in the config profiles until then).
@@ -115,7 +120,7 @@ Note: FastAPI turns header params into hyphenated names, so send `admin-password
 
 ## Final verification checklist (what "verified & working" means)
 - [ ] Restricted payouts-only keys exist for test **and** live, stored in Secret Manager.
-- [ ] Payout schedule = Manual in both modes; live destination = LLC business bank.
+- [ ] Payout schedule = Manual in both modes; live destination = LLC Wise Business USD account (name matches Stripe account holder).
 - [ ] Webhook endpoint registered in both modes; signing secrets in Secret Manager.
 - [ ] Webhook signature verification passes on valid events (200) and rejects forged ones (400).
 - [ ] Manual-approval gate blocks payouts without `confirm=true`.
