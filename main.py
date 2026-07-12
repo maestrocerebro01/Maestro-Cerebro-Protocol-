@@ -61,7 +61,7 @@ app.add_middleware(
 # app.add_middleware(TrustedHostMiddleware, allowed_hosts=["escrow.maestro-cerebro.com", "localhost", "127.0.0.1"])
 
 # Mount static files
-app.mount("/static", StaticFiles(directory="escrow-service/static"), name="static")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # In-memory storage for demonstration (replace with database in production)
 transactions = {}
