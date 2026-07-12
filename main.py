@@ -22,6 +22,15 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 ALGORITHM = "HS256"
 GLOBAL_API_SECRET = os.getenv("GLOBAL_API_SECRET")
 
+# Device node allowlist. Locked to the S8 node after the A14 was reported
+# stolen (2026-07-12). Set ALLOWED_DEVICE_IDS (comma-separated) to re-provision
+# additional trusted device nodes; defaults to the S8 node only.
+ALLOWED_DEVICE_IDS = {
+    d.strip().lower()
+    for d in os.getenv("ALLOWED_DEVICE_IDS", "s8").split(",")
+    if d.strip()
+}
+
 # Auth Helpers
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
@@ -40,6 +49,8 @@ async def authenticate_device(
     device_id: str = Header(...),
     device_secret: str = Header(...)
 ):
+    if device_id.strip().lower() not in ALLOWED_DEVICE_IDS:
+        raise HTTPException(status_code=403, detail="Device node not authorized")
     env_var_name = f"DEVICE_{device_id.upper()}_SECRET"
     expected_secret = os.getenv(env_var_name)
     if not expected_secret or not hmac.compare_digest(device_secret, expected_secret):
