@@ -82,7 +82,18 @@ The endpoint calls PayPal's `/v1/notifications/verify-webhook-signature` and onl
 - Missing `PAYPAL_WEBHOOK_ID` → `500`.
 - Missing signature headers → `400`.
 - Signature not `SUCCESS` → `400`.
-- Verified event → `200`, logs a `PAYPAL_WEBHOOK_VERIFIED` protocol event, and marks a held transaction `released` on `PAYMENT.CAPTURE.COMPLETED`.
+- Verified event → `200`, logs a `PAYPAL_WEBHOOK_VERIFIED` protocol event (with a `handled` flag), and applies the state change below.
+
+**Handled event types:**
+
+| Event | Effect on the matching escrow transaction |
+| --- | --- |
+| `PAYMENT.CAPTURE.COMPLETED` | `held` → `released` |
+| `PAYMENT.CAPTURE.DENIED` / `.REVERSED` / `.REFUNDED` | `pending`/`held` → `cancelled` |
+| `CHECKOUT.ORDER.APPROVED` | logged only (capture drives release) |
+| `PAYMENT.PAYOUTS-ITEM.*` | logged only (payouts aren't tracked as transactions) |
+
+Any other verified event is logged with `handled=false`.
 
 **You cannot fully verify a webhook by hand-crafting a POST in Postman.** PayPal signs each event; a forged body/headers will (correctly) return `400`. The collection's *"Webhook - plumbing test (unsigned, expect 400)"* request exists to confirm exactly that rejection.
 

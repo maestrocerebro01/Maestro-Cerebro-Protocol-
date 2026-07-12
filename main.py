@@ -66,6 +66,17 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # In-memory storage for demonstration (replace with database in production)
 transactions = {}
 
+
+def find_transaction_by_order(order_id):
+    """Return the transaction whose PayPal order id matches, or None."""
+    if not order_id:
+        return None
+    for tx in transactions.values():
+        if tx.paypal_order_id == order_id:
+            return tx
+    return None
+
+
 class Transaction(BaseModel):
     id: Optional[str] = None
     paypal_order_id: Optional[str] = None
@@ -219,17 +230,38 @@ async def paypal_webhook(request: Request):
     related_ids = supplementary.get("related_ids") or {}
     order_id = related_ids.get("order_id") or resource.get("id")
 
-    if event_type == "PAYMENT.CAPTURE.COMPLETED" and order_id:
-        for tx in transactions.values():
-            if tx.paypal_order_id == order_id and tx.status == "held":
-                tx.status = "released"
-                break
+    handled = True
+    if event_type == "PAYMENT.CAPTURE.COMPLETED":
+        # Funds captured: release the held escrow transaction.
+        tx = find_transaction_by_order(order_id)
+        if tx and tx.status == "held":
+            tx.status = "released"
+    elif event_type in (
+        "PAYMENT.CAPTURE.DENIED",
+        "PAYMENT.CAPTURE.REVERSED",
+        "PAYMENT.CAPTURE.REFUNDED",
+    ):
+        # Capture failed or was clawed back: cancel the escrow transaction if it
+        # has not already been finalized.
+        tx = find_transaction_by_order(order_id)
+        if tx and tx.status in ("pending", "held"):
+            tx.status = "cancelled"
+    elif event_type == "CHECKOUT.ORDER.APPROVED":
+        # Buyer approved the order. Capture (not approval) drives release, so no
+        # state change here — recorded for observability only.
+        pass
+    elif event_type and event_type.startswith("PAYMENT.PAYOUTS-ITEM."):
+        # Payout item lifecycle (SUCCEEDED / FAILED / BLOCKED / DENIED / RETURNED /
+        # UNCLAIMED). Payouts are not tracked as escrow transactions here, so log only.
+        pass
+    else:
+        handled = False
 
     await protocol.register_event(
         "PAYPAL_WEBHOOK_VERIFIED",
-        {"event_type": event_type, "order_id": order_id},
+        {"event_type": event_type, "order_id": order_id, "handled": handled},
     )
-    return {"status": "ok"}
+    return {"status": "ok", "event_type": event_type, "handled": handled}
 
 
 @app.post("/paypal-api/checkout/orders/create", response_model=Transaction)
