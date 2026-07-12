@@ -4,3 +4,9 @@ __pycache__/
 .DS_Store
 *.py[cod]
 .vscode/
+
+# Runtime artifacts and local databases (never commit)
+*.db
+escrow.db
+protocol_events.jsonl
+static/proof_*.png

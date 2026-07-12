@@ -7,11 +7,10 @@ Maestro Cerebro Protocol: Documenting the integration of original voice and like
 This service handles escrow transactions for the Maestro Cerebro project.
 
 ### Architecture
-- API Endpoint: https://escrow.maestro-cerebro.com/api
-- Project ID: maestro-cerebro-escrow-123456
-- Service Account: maestro-cerebro-escrow-sa@maestro-cerebro-escrow-123456.iam.gserviceaccount.com
+- API Endpoint: configured per environment (not published in this repo)
+- GCP project ID and service account: stored in GCP Secret Manager / deployment config (never committed to source)
 
 ### Setup
-- [ ] Connect to GitHub Repo: MaestroCerebro/escrow-service
-- [ ] Configure GCP Credentials
+- [ ] Connect to GitHub Repo (keep private)
+- [ ] Configure GCP credentials via Secret Manager
 - [ ] Implement Sentient Protocol SAIL linkage
