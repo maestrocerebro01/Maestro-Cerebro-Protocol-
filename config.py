@@ -40,6 +40,12 @@ class Config:
         return self.get_secret("PAYPAL_CLIENT_SECRET")
 
     @property
+    def paypal_webhook_id(self):
+        # PayPal-generated webhook ID from the developer dashboard. Required to
+        # verify inbound webhook signatures via /v1/notifications/verify-webhook-signature.
+        return self.get_secret("PAYPAL_WEBHOOK_ID")
+
+    @property
     def sentient_protocol_project(self):
         return self.get_secret("GCP_PROJECT", self.project_id)
 

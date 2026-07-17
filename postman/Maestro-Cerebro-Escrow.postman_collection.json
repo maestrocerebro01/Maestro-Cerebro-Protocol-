@@ -1,0 +1,255 @@
+{
+  "info": {
+    "name": "Maestro Cerebro Escrow + PayPal",
+    "description": "Exercises the Maestro Cerebro escrow service endpoints and the PayPal Sandbox APIs directly (OAuth token, create order, list webhooks, verify-webhook-signature). Import together with Maestro-Cerebro-Escrow.postman_environment.json and fill in the environment variables. See docs/POSTMAN_AND_WEBHOOKS.md for the full walkthrough.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Escrow Service (your API)",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/", "host": ["{{base_url}}"], "path": [""] },
+            "description": "Confirms the service is running. Expect 200 with a welcome message."
+          }
+        },
+        {
+          "name": "Get PayPal client token",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "api-key", "value": "{{global_api_secret}}" } ],
+            "url": { "raw": "{{base_url}}/paypal-client-token", "host": ["{{base_url}}"], "path": ["paypal-client-token"] },
+            "description": "Returns a browser-safe client token. Requires the global api-key header. Fails if PayPal credentials are not configured (or are the mock placeholder)."
+          }
+        },
+        {
+          "name": "Hold funds (simple)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "api-key", "value": "{{global_api_secret}}" } ],
+            "url": { "raw": "{{base_url}}/hold/10.00", "host": ["{{base_url}}"], "path": ["hold", "10.00"] },
+            "description": "Creates a PayPal order for the given amount. In mock mode returns MOCK_ORDER_ID."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.order_id) { pm.environment.set('order_id', body.order_id); }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capture funds (simple)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "api-key", "value": "{{global_api_secret}}" } ],
+            "url": { "raw": "{{base_url}}/capture/{{order_id}}", "host": ["{{base_url}}"], "path": ["capture", "{{order_id}}"] },
+            "description": "Captures the order created by Hold funds. Uses {{order_id}} saved by the Hold request."
+          }
+        },
+        {
+          "name": "Create transaction (escrow)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "device-id", "value": "{{device_id}}" },
+              { "key": "device-secret", "value": "{{device_secret}}" },
+              { "key": "api-key", "value": "{{global_api_secret}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 25.00,\n  \"currency\": \"USD\",\n  \"sender_id\": \"buyer-001\",\n  \"receiver_id\": \"artist-001\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/transactions/", "host": ["{{base_url}}"], "path": ["transactions", ""] },
+            "description": "Creates an escrow transaction. Requires device-id/device-secret AND api-key. Runs the Sentient Protocol integrity check, then creates a PayPal order. Saves transaction_id and order_id to the environment."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.id) { pm.environment.set('transaction_id', body.id); }",
+                  "  if (body.paypal_order_id) { pm.environment.set('order_id', body.paypal_order_id); }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Hold transaction",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "device-id", "value": "{{device_id}}" },
+              { "key": "device-secret", "value": "{{device_secret}}" },
+              { "key": "api-key", "value": "{{global_api_secret}}" }
+            ],
+            "url": { "raw": "{{base_url}}/transactions/{{transaction_id}}/hold", "host": ["{{base_url}}"], "path": ["transactions", "{{transaction_id}}", "hold"] },
+            "description": "Moves the transaction from pending to held."
+          }
+        },
+        {
+          "name": "Release transaction",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "device-id", "value": "{{device_id}}" },
+              { "key": "device-secret", "value": "{{device_secret}}" },
+              { "key": "api-key", "value": "{{global_api_secret}}" }
+            ],
+            "url": { "raw": "{{base_url}}/transactions/{{transaction_id}}/release", "host": ["{{base_url}}"], "path": ["transactions", "{{transaction_id}}", "release"] },
+            "description": "Captures the PayPal payment and marks the held transaction released."
+          }
+        },
+        {
+          "name": "Cancel transaction",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "device-id", "value": "{{device_id}}" },
+              { "key": "device-secret", "value": "{{device_secret}}" },
+              { "key": "api-key", "value": "{{global_api_secret}}" }
+            ],
+            "url": { "raw": "{{base_url}}/transactions/{{transaction_id}}/cancel", "host": ["{{base_url}}"], "path": ["transactions", "{{transaction_id}}", "cancel"] },
+            "description": "Cancels a pending or held transaction."
+          }
+        },
+        {
+          "name": "Create payout",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "admin-password", "value": "{{admin_password}}" },
+              { "key": "api-key", "value": "{{global_api_secret}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient_email\": \"sb-recipient@personal.example.com\",\n  \"amount\": 5.00,\n  \"currency\": \"USD\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/payouts", "host": ["{{base_url}}"], "path": ["payouts"] },
+            "description": "Sends a PayPal payout. Requires admin-password AND api-key headers."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhook",
+      "item": [
+        {
+          "name": "Webhook - plumbing test (unsigned, expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "paypal-transmission-id", "value": "test-transmission-id" },
+              { "key": "paypal-transmission-time", "value": "2026-07-12T00:00:00Z" },
+              { "key": "paypal-cert-url", "value": "https://api.sandbox.paypal.com/v1/notifications/certs/CERT-ID" },
+              { "key": "paypal-auth-algo", "value": "SHA256withRSA" },
+              { "key": "paypal-transmission-sig", "value": "invalid-signature" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"WH-TEST-0001\",\n  \"event_type\": \"PAYMENT.CAPTURE.COMPLETED\",\n  \"resource\": {\n    \"id\": \"CAPTURE-123\",\n    \"supplementary_data\": { \"related_ids\": { \"order_id\": \"{{order_id}}\" } }\n  }\n}"
+            },
+            "url": { "raw": "{{base_url}}/paypal-api/webhook", "host": ["{{base_url}}"], "path": ["paypal-api", "webhook"] },
+            "description": "Tests that the endpoint receives and processes a request. A hand-crafted event CANNOT pass PayPal signature verification, so this SHOULD return 400 'Webhook signature verification failed'. That 400 confirms the endpoint is correctly rejecting unsigned traffic. To verify a genuine signed event, use PayPal's Webhook Simulator or trigger a real sandbox transaction (see docs/POSTMAN_AND_WEBHOOKS.md)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "PayPal Sandbox API (direct)",
+      "item": [
+        {
+          "name": "1. Get OAuth2 access token",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{paypal_client_id}}" },
+                { "key": "password", "value": "{{paypal_client_secret}}" }
+              ]
+            },
+            "header": [ { "key": "Content-Type", "value": "application/x-www-form-urlencoded" } ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [ { "key": "grant_type", "value": "client_credentials" } ]
+            },
+            "url": { "raw": "{{paypal_base}}/v1/oauth2/token", "host": ["{{paypal_base}}"], "path": ["v1", "oauth2", "token"] },
+            "description": "Verifies your PayPal sandbox client ID/secret. Saves paypal_access_token for the other PayPal requests."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.access_token) { pm.environment.set('paypal_access_token', body.access_token); }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. Create order (sandbox)",
+          "request": {
+            "method": "POST",
+            "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{paypal_access_token}}" } ] },
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"intent\": \"AUTHORIZE\",\n  \"purchase_units\": [\n    { \"amount\": { \"currency_code\": \"USD\", \"value\": \"25.00\" } }\n  ]\n}"
+            },
+            "url": { "raw": "{{paypal_base}}/v2/checkout/orders", "host": ["{{paypal_base}}"], "path": ["v2", "checkout", "orders"] },
+            "description": "Creates a PayPal sandbox order directly, mirroring PayPalClient.create_order. Approve the returned approve link to generate real webhook events."
+          }
+        },
+        {
+          "name": "3. List registered webhooks",
+          "request": {
+            "method": "GET",
+            "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{paypal_access_token}}" } ] },
+            "header": [],
+            "url": { "raw": "{{paypal_base}}/v1/notifications/webhooks", "host": ["{{paypal_base}}"], "path": ["v1", "notifications", "webhooks"] },
+            "description": "Lists webhooks registered on this app. Copy the id of your endpoint's webhook into the paypal_webhook_id environment variable (and set it as the PAYPAL_WEBHOOK_ID secret on the server)."
+          }
+        },
+        {
+          "name": "4. Verify webhook signature",
+          "request": {
+            "method": "POST",
+            "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{paypal_access_token}}" } ] },
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transmission_id\": \"<paypal-transmission-id from a real delivered event>\",\n  \"transmission_time\": \"<paypal-transmission-time>\",\n  \"cert_url\": \"<paypal-cert-url>\",\n  \"auth_algo\": \"<paypal-auth-algo>\",\n  \"transmission_sig\": \"<paypal-transmission-sig>\",\n  \"webhook_id\": \"{{paypal_webhook_id}}\",\n  \"webhook_event\": {}\n}"
+            },
+            "url": { "raw": "{{paypal_base}}/v1/notifications/verify-webhook-signature", "host": ["{{paypal_base}}"], "path": ["v1", "notifications", "verify-webhook-signature"] },
+            "description": "The exact call the server makes in PayPalClient.verify_webhook. Paste the transmission headers and raw body from a REAL delivered event (from the PayPal dashboard event logs). A genuine event returns verification_status = SUCCESS; forged values return FAILURE."
+          }
+        }
+      ]
+    }
+  ]
+}
