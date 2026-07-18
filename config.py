@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from google.cloud import secretmanager
 from google.auth.exceptions import DefaultCredentialsError
@@ -58,6 +59,26 @@ class Config:
     @property
     def stripe_webhook_secret(self):
         return self.get_secret("STRIPE_WEBHOOK_SECRET")
+
+    @property
+    def stripe_mode(self):
+        """Active Stripe environment: 'sandbox' (default) or 'live'."""
+        return os.getenv("STRIPE_MODE", "sandbox").lower()
+
+    def stripe_profile(self):
+        """
+        Load the non-secret Stripe config profile for the active environment.
+        Profiles live in config/<sandbox|live>.json and hold only non-secret
+        settings (secret *names*, destination reference, tax set-aside rate,
+        FX source). Secrets themselves are never stored here.
+        """
+        profile_name = "live" if self.stripe_mode == "live" else "sandbox"
+        path = os.path.join(os.path.dirname(__file__), "config", f"{profile_name}.json")
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
 
 # Global config instance
 config = Config()
